@@ -3,17 +3,27 @@ import react from '@vitejs/plugin-react'
 import tailwindcss from '@tailwindcss/vite'
 import fs from 'node:fs'
 import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-import siteConfiguration from './.figma/make/site.json'
-
+const projectRoot = path.dirname(fileURLToPath(import.meta.url))
 
 // Vite config — https://vitejs.dev/config/
 export default defineConfig(({ mode }) => {
   // .figma/make/deploy-preview passes `--mode development` for cached-preview builds.
   const emitSourcemaps = mode === 'development'
+  const base =
+    mode === 'production'
+      ? '/Portfolio/'
+      : process.env.FIGMA_PUBLIC_URL
+        ? `${process.env.FIGMA_PUBLIC_URL.replace(/\/+$/, '')}/`
+        : '/'
+  const siteConfigurationPath = path.resolve(projectRoot, '.figma/make/site.json')
+  const siteConfiguration: FigmaSiteConfiguration = fs.existsSync(siteConfigurationPath)
+    ? JSON.parse(fs.readFileSync(siteConfigurationPath, 'utf8'))
+    : {}
 
   return {
-    base: process.env.FIGMA_PUBLIC_URL ? `${process.env.FIGMA_PUBLIC_URL}/` : '/',
+    base,
     build: {
       sourcemap: emitSourcemaps ? 'inline' : false,
       minify: !emitSourcemaps,
@@ -21,7 +31,7 @@ export default defineConfig(({ mode }) => {
     plugins: [
 react(),
       tailwindcss(),
-      figmaSiteConfiguration(siteConfiguration),
+      figmaSiteConfiguration(siteConfiguration, base),
       figmaErrorOverlayReplay(),
       figmaReactRefreshBoundaryFallback(),
       figmaMakeKitPlugin({ storiesGlob: '/src/**/*.stories.{ts,tsx,js,jsx}' }),
@@ -29,7 +39,7 @@ react(),
     ],
     resolve: {
       alias: {
-        '@': path.resolve(__dirname, './src'),
+        '@': path.resolve(projectRoot, './src'),
       },
     },
     server: {
@@ -76,8 +86,8 @@ type FigmaSiteConfiguration = {
   }
 }
 
-/** Applies /.figma/make/site.json to the generated document shell. */
-function figmaSiteConfiguration(config: FigmaSiteConfiguration): Plugin {
+/** Applies /.figma/make/site.json to the generated document shell when present. */
+function figmaSiteConfiguration(config: FigmaSiteConfiguration, base: string): Plugin {
   function sanitizeHtmlValue(value: string | undefined): string {
     return value?.replace(/[^a-zA-Z0-9_-]/g, '') || ''
   }
@@ -88,12 +98,14 @@ function figmaSiteConfiguration(config: FigmaSiteConfiguration): Plugin {
     return html.replace(`<!-- ${slotName} -->`, content)
   }
 
-  const title = config.title ?? "Figma Make App"
+  const title = config.title
   const description = config.description ?? ''
-  // Imported HTML keeps its own favicon. New Makes use PNG because Google Search does not
-  // support SVG favicons, even though browsers do.
-  const favicon = config.icons?.icon ?? '/favicon.png'
-  const socialImage = config.openGraph?.image ?? ''
+  function withBasePath(url: string): string {
+    if (/^(?:[a-z][a-z\d+.-]*:|\/\/|#)/i.test(url)) return url
+    return `${base}${url.replace(/^\/+/, '')}`
+  }
+  const favicon = config.icons?.icon ? withBasePath(config.icons.icon) : undefined
+  const socialImage = config.openGraph?.image ? withBasePath(config.openGraph.image) : ''
   const language = sanitizeHtmlValue(config.language) || 'en'
   const googleAnalyticsId = sanitizeHtmlValue(config.analytics?.googleAnalyticsId)
   const headStart = config.customScripts?.headStart ?? ''
@@ -126,7 +138,7 @@ function figmaSiteConfiguration(config: FigmaSiteConfiguration): Plugin {
       handler(html) {
         let result = html
         result = replaceHtmlCommentSlot(result, 'figma:lang', language)
-        result = replaceHtmlCommentSlot(result, 'figma:title', escapeHtmlText(title))
+        result = replaceHtmlCommentSlot(result, 'figma:title', escapeHtmlText(title ?? ''))
         result = replaceHtmlCommentSlot(result, 'figma:head-start', headStart)
         result = replaceHtmlCommentSlot(result, 'figma:head-end', headEnd)
         result = replaceHtmlCommentSlot(result, 'figma:body-start', bodyStart)
@@ -398,9 +410,9 @@ function figmaMakeKitPlugin(options: { storiesGlob: string | string[] }): Plugin
  * path, such as `libraries/<name>/`.
  */
 function figmaLinkedPackageSourcemaps(): Plugin {
-  const packageJson = JSON.parse(fs.readFileSync(path.resolve(__dirname, 'package.json'), 'utf8'))
+  const packageJson = JSON.parse(fs.readFileSync(path.resolve(projectRoot, 'package.json'), 'utf8'))
   const linkedPackages = Object.keys({ ...packageJson.dependencies, ...packageJson.devDependencies }).flatMap((name) => {
-    const installedDir = path.resolve(__dirname, 'node_modules', name)
+    const installedDir = path.resolve(projectRoot, 'node_modules', name)
     try {
       const realDir = fs.realpathSync(installedDir)
       return realDir.split(path.sep).includes('node_modules') ? [] : [{ installedDir, realDir }]
